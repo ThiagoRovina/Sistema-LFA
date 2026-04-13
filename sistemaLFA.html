@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerador Dinâmico de AFD / AFND</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Vis Network (Para desenhar o grafo interativo automaticamente) -->
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    
+    <style>
+        body { font-family: sans-serif; }
+        #networkContainer {
+            outline: none;
+            background-color: #f8fafc;
+        }
+        
+        /* Tabela de transição estilizada */
+        .table-container th { background-color: #f1f5f9; }
+        .table-container td, .table-container th { text-align: center; border-color: #e2e8f0; }
+        .row-final { background-color: #f0fdf4; }
+        .row-error { background-color: #fef2f2; color: #991b1b; }
+        
+        /* Destaques do simulador na fita */
+        .tape-char {
+            transition: all 0.3s ease;
+        }
+        .tape-active {
+            background-color: #dbeafe;
+            border-color: #3b82f6;
+            color: #1d4ed8;
+            transform: scale(1.1);
+        }
+        .tape-done {
+            background-color: #f1f5f9;
+            border-color: #cbd5e1;
+            color: #94a3b8;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 min-h-screen p-6">
+
+    <div class="max-w-6xl mx-auto space-y-8">
+        
+        <!-- Cabeçalho -->
+        <header class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+            <h1 class="text-3xl font-bold text-gray-900 mb-2">Gerador Dinâmico de AFD e AFND</h1>
+            <p class="text-lg text-gray-600">
+                Transforme Expressões Regulares em Autómatos Finitos Determinísticos ou Não Determinísticos em tempo real.
+            </p>
+        </header>
+
+        <!-- Construtor (Input de Regex) -->
+        <div class="bg-blue-50 p-6 rounded-xl border border-blue-200 shadow-sm">
+            <h2 class="text-2xl font-bold text-blue-900 mb-2">Construa o seu Autómato</h2>
+            <p class="text-blue-800 mb-4">
+                Digite uma expressão regular e escolha o tipo de autómato pretendido.
+                <br>
+                <span class="text-sm bg-blue-100 text-blue-800 px-2 py-1 rounded font-semibold mt-2 inline-block">
+                    Operadores suportados: a-z, 0-9, * ou ^n, | (ou), () (agrupamento). Suporta notação matemática { expr | cond }.
+                </span>
+            </p>
+            <div class="flex flex-col md:flex-row gap-4 items-start md:items-center w-full">
+                <select id="automatonType" class="w-full md:w-auto border border-blue-300 rounded-lg px-4 py-3 text-lg focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-200 bg-white shadow-inner font-semibold text-blue-900">
+                    <option value="DFA">Gerar AFD (Determinístico)</option>
+                    <option value="NFA">Gerar AFND (Não Determinístico)</option>
+                </select>
+                
+                <input type="text" id="regexInput" value="{b(ab)^n b | n >= 0}" 
+                    class="flex-1 w-full border border-blue-300 rounded-lg px-4 py-3 text-lg font-mono focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-200 shadow-inner"
+                    placeholder="Ex: a(ab)*bb ou {b(ab)^n b | n >= 0}">
+                
+                <button onclick="buildAndRenderAutomaton()" 
+                    class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-8 rounded-lg shadow-md transition-transform transform hover:scale-105 w-full md:w-auto shrink-0">
+                    Gerar Grafo
+                </button>
+            </div>
+            <div id="translationInfo" class="text-blue-700 font-semibold mt-3 hidden bg-blue-50 p-3 rounded border border-blue-200"></div>
+            <div id="buildError" class="text-red-600 font-semibold mt-3 hidden bg-red-50 p-3 rounded border border-red-200"></div>
+        </div>
+
+        <!-- Grade Principal -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            
+            <!-- Esquerda: Tabela de Transições -->
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200 overflow-x-auto lg:col-span-1 flex flex-col max-h-[600px]">
+                <h2 class="text-xl font-bold mb-4 border-b pb-2">Tabela de Transições (δ)</h2>
+                <div class="overflow-y-auto flex-1 table-container">
+                    <table id="transitionTable" class="min-w-full text-sm border-collapse border border-gray-200">
+                        <!-- Tabela será injetada aqui via JS -->
+                    </table>
+                </div>
+            </div>
+
+            <!-- Direita: Vis Network Diagram -->
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200 lg:col-span-2">
+                <h2 class="text-xl font-bold mb-4 border-b pb-2">Diagrama de Estados (Grafo)</h2>
+                <div id="networkContainer" class="w-full h-[500px] border border-gray-300 rounded-lg shadow-inner bg-slate-50"></div>
+                <p class="text-xs text-gray-500 mt-2 text-center">Dica: Pode arrastar os nós para organizar a visualização como preferir.</p>
+            </div>
+        </div>
+
+        <!-- Simulador -->
+        <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+            <h2 class="text-xl font-bold mb-4 border-b pb-2">Simulador Passo a Passo</h2>
+            <div class="flex flex-col md:flex-row gap-4 items-center">
+                <input type="text" id="inputString" placeholder="Digite uma string para testar (ex: aabbb)" 
+                    class="flex-1 w-full border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-lg shadow-inner"
+                    autocomplete="off" spellcheck="false">
+                <button onclick="startSimulation()" id="simBtn"
+                    class="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-8 rounded-lg shadow-md transition-transform transform hover:scale-105 w-full md:w-auto shrink-0">
+                    Simular
+                </button>
+            </div>
+            <div id="tapeContainer" class="flex flex-wrap gap-3 justify-center mt-6 min-h-12"></div>
+            <div id="statusMessage" class="mt-6 text-center font-bold text-xl h-8 text-gray-600 transition-colors">
+                Gere um autômato para iniciar.
+            </div>
+        </div>
+    </div>
+
+        <script>
+        /**
+         * =========================================
+         * MOTOR DE EXPRESSÕES REGULARES -> AFD / AFND
+         * =========================================
+         */
+        const RegexEngine = {
+            normalize: function(input) {
+                let str = input.replace(/\s+/g, '');
+                
+                // Extrai a parte da fórmula se for uma notação de conjunto { formula | condicao }
+                if (str.startsWith('{') && str.endsWith('}')) {
+                    let inner = str.slice(1, -1);
+                    let parts = inner.split('|');
+                    str = parts[0]; // Pega apenas a fórmula (ex: "b(ab)^nb")
+                }
+                
+                // Traduz potências de linguagens formais (^n, ^m) para fecho de Kleene (*)
+                // Na teoria dos autômatos (x)^n com n>=0 é equivalente a x*
+                str = str.replace(/\^[a-z]/gi, '*');
+                
+                return str;
+            },
+
+            insertExplicitConcat: function(re) {
+                let res = "";
+                for (let i = 0; i < re.length; i++) {
+                    let c1 = re[i];
+                    res += c1;
+                    if (i + 1 < re.length) {
+                        let c2 = re[i + 1];
+                        let isC1Operand = /[a-zA-Z0-9*)]/.test(c1);
+                        let isC2Operand = /[a-zA-Z0-9(]/.test(c2);
+                        if (isC1Operand && isC2Operand) {
+                            res += '.';
+                        }
+                    }
+                }
+                return res;
+            },
+
+            toPostfix: function(re) {
+                let output = "";
+                let stack = [];
+                let precedence = { '*': 3, '.': 2, '|': 1 };
+                
+                for (let char of re) {
+                    if (/[a-zA-Z0-9]/.test(char)) {
+                        output += char;
+                    } else if (char === '(') {
+                        stack.push(char);
+                    } else if (char === ')') {
+                        while (stack.length && stack[stack.length - 1] !== '(') {
+                            output += stack.pop();
+                        }
+                        stack.pop();
+                    } else {
+                        while (stack.length && stack[stack.length - 1] !== '(' && precedence[stack[stack.length - 1]] >= precedence[char]) {
+                            output += stack.pop();
+                        }
+                        stack.push(char);
+                    }
+                }
+                while (stack.length) output += stack.pop();
+                return output;
+            },
+
+            createNFA: function(postfix) {
+                let stateId = 0;
+                let stack = [];
+                
+                for (let char of postfix) {
+                    if (/[a-zA-Z0-9]/.test(char)) {
+                        let start = stateId++;
+                        let accept = stateId++;
+                        let transitions = {};
+                        transitions[start] = [{ char: char, to: accept }];
+                        stack.push({ start, accept, transitions });
+                    } else if (char === '.') {
+                        if(stack.length < 2) throw new Error("Erro de sintaxe (concatenação).");
+                        let f2 = stack.pop();
+                        let f1 = stack.pop();
+                        let transitions = { ...f1.transitions, ...f2.transitions };
+                        if (!transitions[f1.accept]) transitions[f1.accept] = [];
+                        transitions[f1.accept].push({ char: 'ε', to: f2.start });
+                        stack.push({ start: f1.start, accept: f2.accept, transitions });
+                    } else if (char === '|') {
+                        if(stack.length < 2) throw new Error("Uso inválido do operador |.");
+                        let f2 = stack.pop();
+                        let f1 = stack.pop();
+                        let start = stateId++;
+                        let accept = stateId++;
+                        let transitions = { ...f1.transitions, ...f2.transitions };
+                        transitions[start] = [{ char: 'ε', to: f1.start }, { char: 'ε', to: f2.start }];
+                        if (!transitions[f1.accept]) transitions[f1.accept] = [];
+                        if (!transitions[f2.accept]) transitions[f2.accept] = [];
+                        transitions[f1.accept].push({ char: 'ε', to: accept });
+                        transitions[f2.accept].push({ char: 'ε', to: accept });
+                        stack.push({ start, accept, transitions });
+                    } else if (char === '*') {
+                        if(stack.length < 1) throw new Error("Uso inválido do operador *.");
+                        let f = stack.pop();
+                        let start = stateId++;
+                        let accept = stateId++;
+                        let transitions = { ...f.transitions };
+                        transitions[start] = [{ char: 'ε', to: f.start }, { char: 'ε', to: accept }];
+                        if (!transitions[f.accept]) transitions[f.accept] = [];
+                        transitions[f.accept].push({ char: 'ε', to: f.start }, { char: 'ε', to: accept });
+                        stack.push({ start, accept, transitions });
+                    }
+                }
+                if (stack.length !== 1) throw new Error("Expressão mal formatada.");
+                return stack.pop();
+            },
+
+            getEpsilonClosure: function(states, transitions) {
+                let closure = new Set(states);
+                let stack = [...states];
+                while (stack.length) {
+                    let state = stack.pop();
+                    let stateTrans = transitions[state] || [];
+                    for (let t of stateTrans) {
+                        if (t.char === 'ε' && !closure.has(t.to)) {
+                            closure.add(t.to);
+                            stack.push(t.to);
+                        }
+                    }
+                }
+                return Array.from(closure).sort((a, b) => a - b);
+            },
+
+            nfaToDfa: function(nfa, alphabet) {
+                let dfaTransitions = {};
+                let dfaAccepting = [];
+                let dfaStatesMap = {}; 
+                let dfaStatesList = [];
+                let nextDfaStateId = 0;
+
+                let startClosure = this.getEpsilonClosure([nfa.start], nfa.transitions);
+                let startKey = startClosure.join(',');
+                let q0 = `q${nextDfaStateId++}`;
+                dfaStatesMap[startKey] = q0;
+                dfaStatesList.push({ name: q0, nfaStates: startClosure });
+                
+                let queue = [startKey];
+
+                while (queue.length) {
+                    if (dfaStatesList.length > 100) {
+                        throw new Error("Expressão muito complexa! Grafo excede 100 estados.");
+                    }
+
+                    let currentKey = queue.shift();
+                    let currentDfaState = dfaStatesMap[currentKey];
+                    let currentNfaSet = currentKey.split(',').map(Number);
+
+                    if (currentNfaSet.includes(nfa.accept) && !dfaAccepting.includes(currentDfaState)) {
+                        dfaAccepting.push(currentDfaState);
+                    }
+
+                    dfaTransitions[currentDfaState] = {};
+
+                    for (let char of alphabet) {
+                        let moveSet = new Set();
+                        for (let state of currentNfaSet) {
+                            let trans = nfa.transitions[state] || [];
+                            for (let t of trans) {
+                                if (t.char === char) {
+                                    moveSet.add(t.to);
+                                }
+                            }
+                        }
+
+                        if (moveSet.size > 0) {
+                            let closure = this.getEpsilonClosure(Array.from(moveSet), nfa.transitions);
+                            let newKey = closure.join(',');
+                            if (!dfaStatesMap[newKey]) {
+                                dfaStatesMap[newKey] = `q${nextDfaStateId++}`;
+                                dfaStatesList.push({ name: dfaStatesMap[newKey], nfaStates: closure });
+                                queue.push(newKey);
+                            }
+                            dfaTransitions[currentDfaState][char] = dfaStatesMap[newKey];
+                        }
+                    }
+                }
+
+                return {
+                    initial: 'q0',
+                    accepting: dfaAccepting,
+                    transitions: dfaTransitions,
+                    states: Object.values(dfaStatesMap)
+                };
+            },
+
+            minimizeDfa: function(dfa, alphabet) {
+                const sink = '__sink__';
+                const allStates = Array.from(new Set([...dfa.states, sink]));
+                const completeTransitions = {};
+
+                for (let state of allStates) {
+                    completeTransitions[state] = {};
+                    for (let char of alphabet) {
+                        completeTransitions[state][char] =
+                            state === sink ? sink : ((dfa.transitions[state] && dfa.transitions[state][char]) || sink);
+                    }
+                }
+
+                const acceptingSet = new Set(dfa.accepting);
+                let partitions = [
+                    allStates.filter(state => acceptingSet.has(state)),
+                    allStates.filter(state => !acceptingSet.has(state))
+                ].filter(group => group.length > 0);
+
+                let changed = true;
+                while (changed) {
+                    changed = false;
+                    const stateToPartition = {};
+                    partitions.forEach((group, index) => {
+                        group.forEach(state => stateToPartition[state] = index);
+                    });
+
+                    const nextPartitions = [];
+                    for (let group of partitions) {
+                        const buckets = {};
+
+                        for (let state of group) {
+                            const signature = alphabet
+                                .map(char => stateToPartition[completeTransitions[state][char]])
+                                .join('|');
+
+                            if (!buckets[signature]) buckets[signature] = [];
+                            buckets[signature].push(state);
+                        }
+
+                        const splitGroups = Object.values(buckets);
+                        if (splitGroups.length > 1) changed = true;
+                        nextPartitions.push(...splitGroups);
+                    }
+
+                    partitions = nextPartitions;
+                }
+
+                const stateToGroup = {};
+                partitions.forEach((group, index) => {
+                    group.forEach(state => stateToGroup[state] = index);
+                });
+
+                const sinkGroup = stateToGroup[sink];
+                const groupTransitions = {};
+
+                for (let index = 0; index < partitions.length; index++) {
+                    const representative = partitions[index][0];
+                    groupTransitions[index] = {};
+
+                    for (let char of alphabet) {
+                        const targetGroup = stateToGroup[completeTransitions[representative][char]];
+                        if (targetGroup !== sinkGroup) groupTransitions[index][char] = targetGroup;
+                    }
+                }
+
+                const startGroup = stateToGroup[dfa.initial];
+                const queue = [startGroup];
+                const groupToName = { [startGroup]: 'q0' };
+                let nextId = 1;
+
+                for (let i = 0; i < queue.length; i++) {
+                    const group = queue[i];
+
+                    for (let char of alphabet) {
+                        const targetGroup = groupTransitions[group][char];
+                        if (targetGroup === undefined || targetGroup === sinkGroup) continue;
+
+                        if (!groupToName[targetGroup]) {
+                            groupToName[targetGroup] = `q${nextId++}`;
+                            queue.push(targetGroup);
+                        }
+                    }
+                }
+
+                const transitions = {};
+                const accepting = [];
+                const states = queue.map(group => groupToName[group]);
+
+                for (let group of queue) {
+                    const stateName = groupToName[group];
+                    transitions[stateName] = {};
+
+                    if (partitions[group].some(state => acceptingSet.has(state))) {
+                        accepting.push(stateName);
+                    }
+
+                    for (let char of alphabet) {
+                        const targetGroup = groupTransitions[group][char];
+                        if (targetGroup !== undefined && targetGroup !== sinkGroup && groupToName[targetGroup]) {
+                            transitions[stateName][char] = groupToName[targetGroup];
+                        }
+                    }
+                }
+
+                return {
+                    initial: 'q0',
+                    accepting,
+                    transitions,
+                    states
+                };
+            },
+
+            compile: function(re, type = 'DFA') {
+                let open = 0;
+                for(let c of re) {
+                    if(c === '(') open++;
+                    if(c === ')') open--;
+                    if(open < 0) throw new Error("Parênteses desbalanceados.");
+                }
+                if(open !== 0) throw new Error("Parênteses desbalanceados.");
+                
+                let alphabetSet = new Set();
+                for(let c of re) {
+                    if(/[a-zA-Z0-9]/.test(c)) alphabetSet.add(c);
+                }
+                let alphabet = Array.from(alphabetSet).sort();
+                if(alphabet.length === 0) throw new Error("A expressão não possui letras ou números para formar um alfabeto.");
+
+                let withConcat = this.insertExplicitConcat(re);
+                let postfix = this.toPostfix(withConcat);
+                let nfa = this.createNFA(postfix);
+                
+                if (type === 'NFA') {
+                    // Formata a estrutura do AFND para a renderização da interface
+                    let formatState = (s) => `q${s}`;
+                    let formattedTransitions = {};
+                    let states = new Set([formatState(nfa.start), formatState(nfa.accept)]);
+                    
+                    for (let state in nfa.transitions) {
+                        let qState = formatState(state);
+                        states.add(qState);
+                        formattedTransitions[qState] = {};
+                        for (let t of nfa.transitions[state]) {
+                            let qTo = formatState(t.to);
+                            states.add(qTo);
+                            if (!formattedTransitions[qState][t.char]) {
+                                formattedTransitions[qState][t.char] = [];
+                            }
+                            formattedTransitions[qState][t.char].push(qTo);
+                        }
+                    }
+                    
+                    // Adiciona estados vazios caso o estado final não tenha transições de saída
+                    states.forEach(s => {
+                        if (!formattedTransitions[s]) formattedTransitions[s] = {};
+                    });
+
+                    return { 
+                        automaton: {
+                            type: 'NFA',
+                            initial: formatState(nfa.start),
+                            accepting: [formatState(nfa.accept)],
+                            transitions: formattedTransitions,
+                            states: Array.from(states).sort((a, b) => parseInt(a.replace('q', '')) - parseInt(b.replace('q', ''))),
+                            rawNfa: nfa // Mantém o bruto para cálculos de fecho-épsilon na simulação
+                        }, 
+                        alphabet 
+                    };
+                }
+
+                let dfa = this.nfaToDfa(nfa, alphabet);
+                let minimizedDfa = this.minimizeDfa(dfa, alphabet);
+                return { automaton: { ...minimizedDfa, type: 'DFA' }, alphabet };
+            }
+        };
+
+        /**
+         * =========================================
+         * INTEGRAÇÃO COM A INTERFACE E GRAFOS
+         * =========================================
+         */
+        let globalAutomaton = null;
+        let globalAlphabet = [];
+        let network = null;
+        let nodesData = null;
+        let currentSimId = 0;
+
+        function buildAndRenderAutomaton() {
+            let rawInput = document.getElementById('regexInput').value;
+            let input = RegexEngine.normalize(rawInput); // Aplica a normalização matemática
+            let type = document.getElementById('automatonType').value;
+            let errorDiv = document.getElementById('buildError');
+            let infoDiv = document.getElementById('translationInfo');
+            
+            if(!input) {
+                errorDiv.innerText = "Por favor, digite uma expressão regular ou fórmula.";
+                errorDiv.classList.remove('hidden');
+                infoDiv.classList.add('hidden');
+                return;
+            }
+
+            try {
+                errorDiv.classList.add('hidden');
+                
+                // Informa o usuário visualmente caso uma conversão matemática tenha ocorrido
+                if (rawInput.includes('{') || rawInput.includes('^')) {
+                    infoDiv.innerText = `Fórmula matemática traduzida internamente para: ${input}`;
+                    infoDiv.classList.remove('hidden');
+                } else {
+                    infoDiv.classList.add('hidden');
+                }
+                
+                let result = RegexEngine.compile(input, type);
+                globalAutomaton = result.automaton;
+                globalAlphabet = result.alphabet;
+
+                currentSimId++;
+                resetSimulationUI();
+
+                renderTable(globalAutomaton, globalAlphabet);
+                let graphRendered = renderGraph(globalAutomaton);
+                
+                document.getElementById('inputString').placeholder = `Use apenas: ${globalAlphabet.join(', ')}`;
+                
+                let tipoNome = type === 'DFA' ? 'AFD' : 'AFND';
+                if (graphRendered === false) {
+                    setStatus(`${tipoNome} gerado, mas o grafo nao carregou porque a biblioteca externa falhou. Alfabeto: {${globalAlphabet.join(', ')}}`, "text-red-600");
+                } else {
+                    setStatus(`${tipoNome} gerado com sucesso! Alfabeto: {${globalAlphabet.join(', ')}}`, "text-blue-600");
+                }
+
+            } catch (err) {
+                errorDiv.innerText = err.message;
+                errorDiv.classList.remove('hidden');
+                console.error(err);
+            }
+        }
+
+        function renderTable(automaton, alphabet) {
+            let cols = [...alphabet];
+            if (automaton.type === 'NFA') cols.push('ε');
+
+            let thead = `<tr><th class="border p-3 text-gray-700 bg-gray-100 font-bold">Estado Atual</th>` + 
+                        cols.map(a => `<th class="border p-3 text-gray-700 bg-gray-100 font-bold">Lê '${a}'</th>`).join('') + `</tr>`;
+            let tbody = '';
+            
+            for (let state of automaton.states) {
+                let isInit = state === automaton.initial;
+                let isFinal = automaton.accepting.includes(state);
+                let stateLabel = (isInit ? '→ ' : '') + (isFinal ? '* ' : '') + state;
+                
+                let rowClass = isFinal ? 'row-final' : '';
+                
+                tbody += `<tr class="${rowClass} hover:bg-gray-50 transition-colors">
+                    <td class="border p-3 font-bold text-gray-900">${stateLabel}</td>`;
+                    
+                for (let char of cols) {
+                    let toState = automaton.transitions[state] && automaton.transitions[state][char];
+                    let displayState = '-';
+                    
+                    if (toState) {
+                        if (Array.isArray(toState)) displayState = toState.length > 0 ? toState.join(', ') : '-';
+                        else displayState = toState;
+                    }
+
+                    let textCol = displayState === '-' ? 'text-gray-400' : 'text-blue-700 font-medium';
+                    tbody += `<td class="border p-3 ${textCol}">${displayState}</td>`;
+                }
+                tbody += `</tr>`;
+            }
+            document.getElementById('transitionTable').innerHTML = `<thead>${thead}</thead><tbody>${tbody}</tbody>`;
+        }
+
+        function renderGraph(automaton) {
+            if (typeof vis === 'undefined') {
+                setStatus("A biblioteca do grafo nao carregou. Verifique a conexao e recarregue a pagina.", "text-red-600");
+                return false;
+            }
+
+            let nodes = [];
+            
+            nodes.push({ id: 'invis_start', shape: 'text', label: 'Inicio', x: automaton.fixedPositions ? -430 : undefined, y: automaton.fixedPositions ? 0 : undefined, fixed: automaton.fixedPositions ? { x: true, y: true } : false, font: {size: 14, color: '#2563eb', bold: true} });
+            
+            for (let s of automaton.states) {
+                let isInit = s === automaton.initial;
+                let isFinal = automaton.accepting.includes(s);
+                let fixedPosition = automaton.fixedPositions && automaton.fixedPositions[s];
+                
+                nodes.push({
+                    id: s,
+                    label: s,
+                    shape: 'circle',
+                    x: fixedPosition ? fixedPosition.x : undefined,
+                    y: fixedPosition ? fixedPosition.y : undefined,
+                    fixed: fixedPosition ? { x: true, y: true } : false,
+                    borderWidth: isFinal ? 4 : 2,
+                    color: {
+                        background: isInit ? '#dbeafe' : '#ffffff',
+                        border: isFinal ? '#16a34a' : '#475569'
+                    },
+                    font: { color: '#0f172a', size: 16, face: 'sans-serif', bold: true },
+                    shadow: { enabled: true, color: 'rgba(0,0,0,0.1)' }
+                });
+            }
+            
+            let edgesMap = {};
+            for (let fromState of automaton.states) {
+                if(!automaton.transitions[fromState]) continue;
+                for (let char in automaton.transitions[fromState]) {
+                    let targets = automaton.transitions[fromState][char];
+                    if (!Array.isArray(targets)) targets = [targets];
+                    
+                    for (let toState of targets) {
+                        let key = fromState + '->' + toState;
+                        if(!edgesMap[key]) edgesMap[key] = { from: fromState, to: toState, labels: [] };
+                        if(!edgesMap[key].labels.includes(char)) edgesMap[key].labels.push(char);
+                    }
+                }
+            }
+            
+            let edges = Object.values(edgesMap).map(e => {
+                let isSelfLoop = e.from === e.to;
+                let hasReverseEdge = edgesMap[e.to + '->' + e.from] && !isSelfLoop;
+
+                return {
+                    from: e.from,
+                    to: e.to,
+                    label: e.labels.join(', '),
+                    arrows: 'to',
+                    font: { align: hasReverseEdge && e.from > e.to ? 'bottom' : 'top', size: 14, color: '#475569', bold: true, strokeWidth: 3, strokeColor: '#ffffff' },
+                    color: { color: '#64748b' },
+                    smooth: isSelfLoop
+                        ? { type: 'curvedCW', roundness: 0.65 }
+                        : hasReverseEdge
+                            ? { type: 'curvedCW', roundness: 0.65 }
+                            : { type: automaton.fixedPositions ? 'continuous' : 'dynamic' },
+                    selfReference: isSelfLoop
+                        ? { size: 45, angle: Math.PI / 4, renderBehindTheNode: false }
+                        : undefined
+                };
+            });
+
+            edges.push({ from: 'invis_start', to: automaton.initial, arrows: 'to', color: {color: '#2563eb'}, width: 2, length: 70 });
+
+            nodesData = new vis.DataSet(nodes);
+            let edgesData = new vis.DataSet(edges);
+
+            let container = document.getElementById('networkContainer');
+            let data = { nodes: nodesData, edges: edgesData };
+            
+            let options = {
+                physics: {
+                    enabled: !automaton.fixedPositions,
+                    barnesHut: { gravitationalConstant: -3000, centralGravity: 0.1, springLength: 150 },
+                    minVelocity: 0.75
+                },
+                layout: { randomSeed: 5 },
+                interaction: { hover: true, tooltipDelay: 200 }
+            };
+            
+            if (network) network.destroy();
+            network = new vis.Network(container, data, options);
+            return true;
+        }
+
+        /**
+         * =========================================
+         * SIMULADOR PASSO A PASSO
+         * =========================================
+         */
+        const delay = ms => new Promise(res => setTimeout(res, ms));
+
+        function setStatus(msg, colorClass) {
+            const el = document.getElementById('statusMessage');
+            el.className = `mt-6 text-center font-bold text-xl h-8 ${colorClass} transition-colors`;
+            el.innerText = msg;
+        }
+
+        function resetSimulationUI() {
+            document.getElementById('simBtn').disabled = false;
+            document.getElementById('simBtn').classList.remove('opacity-50', 'cursor-not-allowed');
+            document.getElementById('tapeContainer').innerHTML = '';
+            
+            if(globalAutomaton && nodesData) {
+                let updates = globalAutomaton.states.map(s => {
+                    let isInit = s === globalAutomaton.initial;
+                    let isFinal = globalAutomaton.accepting.includes(s);
+                    return {
+                        id: s,
+                        color: {
+                            background: isInit ? '#dbeafe' : '#ffffff',
+                            border: isFinal ? '#16a34a' : '#475569'
+                        }
+                    };
+                });
+                nodesData.update(updates);
+                if (network) network.unselectAll();
+            }
+        }
+
+        function highlightActiveStates(statesArr) {
+            if (!globalAutomaton || !nodesData) return;
+
+            // Restaura cores
+            let resets = globalAutomaton.states.map(s => {
+                let isInit = s === globalAutomaton.initial;
+                let isFinal = globalAutomaton.accepting.includes(s);
+                return {
+                    id: s,
+                    color: {
+                        background: isInit ? '#dbeafe' : '#ffffff',
+                        border: isFinal ? '#16a34a' : '#475569'
+                    }
+                };
+            });
+            nodesData.update(resets);
+
+            // Destaca vivos
+            let updates = statesArr.map(s => ({
+                id: s, 
+                color: {background: '#fef08a', border: '#ca8a04'}
+            }));
+            nodesData.update(updates);
+            network.selectNodes(statesArr);
+        }
+
+        async function startSimulation() {
+            if (!globalAutomaton) return;
+            
+            currentSimId++;
+            let simId = currentSimId; 
+            
+            const inputElement = document.getElementById('inputString');
+            let str = inputElement.value.replace(/\s+/g, '');
+            
+            resetSimulationUI();
+
+            for(let c of str) {
+                if(!globalAlphabet.includes(c)) {
+                    setStatus(`Erro: O caractere '${c}' não existe na fórmula. Alfabeto é {${globalAlphabet.join(',')}}`, "text-red-600");
+                    return;
+                }
+            }
+
+            document.getElementById('simBtn').disabled = true;
+            document.getElementById('simBtn').classList.add('opacity-50', 'cursor-not-allowed');
+            
+            const tapeDiv = document.getElementById('tapeContainer');
+            for (let i = 0; i < str.length; i++) {
+                const div = document.createElement('div');
+                div.id = `tape-char-${i}`;
+                div.className = 'w-12 h-12 flex items-center justify-center border-2 border-gray-300 rounded-lg font-bold text-2xl text-gray-700 tape-char bg-white shadow-sm';
+                div.innerText = str[i];
+                tapeDiv.appendChild(div);
+            }
+
+            setStatus("Iniciando processamento...", "text-blue-600");
+            await delay(600);
+
+            // Estado(s) Inicial(ais)
+            let currentStates = [];
+            if (globalAutomaton.type === 'NFA') {
+                let startSet = RegexEngine.getEpsilonClosure([globalAutomaton.rawNfa.start], globalAutomaton.rawNfa.transitions);
+                currentStates = startSet.map(s => `q${s}`);
+                setStatus(`Início (c/ fecho-ε): [${currentStates.join(', ')}]`, "text-blue-700");
+            } else {
+                currentStates = [globalAutomaton.initial];
+            }
+
+            let crashed = false;
+            highlightActiveStates(currentStates);
+            await delay(800);
+
+            if (str.length === 0) {
+                // Se a string é vazia, vamos direto para a validação final em vez de entrar no loop
+            } else {
+                // Loop de processamento
+                for (let i = 0; i < str.length; i++) {
+                    if(currentSimId !== simId) return;
+
+                    const char = str[i];
+                    const tapeEl = document.getElementById(`tape-char-${i}`);
+                    if (tapeEl) tapeEl.classList.add('tape-active');
+
+                    await delay(500);
+
+                    // Transição
+                    let nextStates = new Set();
+                    for (let state of currentStates) {
+                        let targets = globalAutomaton.transitions[state] && globalAutomaton.transitions[state][char];
+                        if (targets) {
+                            if (Array.isArray(targets)) targets.forEach(t => nextStates.add(t));
+                            else nextStates.add(targets);
+                        }
+                    }
+
+                    // Se for NFA, aplicar fecho épsilon aos destinos
+                    if (globalAutomaton.type === 'NFA' && nextStates.size > 0) {
+                        let numStates = Array.from(nextStates).map(s => parseInt(s.replace('q','')));
+                        let closure = RegexEngine.getEpsilonClosure(numStates, globalAutomaton.rawNfa.transitions);
+                        nextStates = new Set(closure.map(s => `q${s}`));
+                    }
+                    
+                    if (nextStates.size === 0) {
+                        setStatus(`CADEIA REJEITADA! Sem transição a partir de [${currentStates.join(', ')}] lendo '${char}'.`, "text-red-600");
+                        let updates = currentStates.map(s => ({id: s, color: {background: '#fecaca', border: '#dc2626'}}));
+                        nodesData.update(updates);
+                        crashed = true;
+                        break;
+                    }
+
+                    currentStates = Array.from(nextStates);
+                    setStatus(`Lendo '${char}' ➔ Estados Ativos: [${currentStates.join(', ')}]`, "text-blue-700");
+                    
+                    highlightActiveStates(currentStates);
+                    await delay(800);
+                    if(currentSimId !== simId) return;
+                    
+                    if (tapeEl) {
+                        tapeEl.classList.remove('tape-active');
+                        tapeEl.classList.add('tape-done');
+                    }
+                }
+            }
+
+            if(currentSimId !== simId) return;
+
+            if (!crashed) {
+                await delay(600);
+                if(currentSimId !== simId) return;
+
+                // Veredito final: Se algum dos estados ativos for estado final, cadeia aceite!
+                let isAccepted = currentStates.some(s => globalAutomaton.accepting.includes(s));
+                
+                if (isAccepted) {
+                    setStatus(`CADEIA ACEITE! Atingiu o estado final corretamente.`, "text-green-600");
+                    let updates = currentStates.map(s => ({
+                        id: s, 
+                        color: globalAutomaton.accepting.includes(s) ? {background: '#bbf7d0', border: '#16a34a'} : undefined
+                    }));
+                    nodesData.update(updates);
+                } else {
+                    setStatus(`CADEIA REJEITADA! Parou em [${currentStates.join(', ')}], nenhum é final.`, "text-red-600");
+                    let updates = currentStates.map(s => ({id: s, color: {background: '#fecaca', border: '#dc2626'}}));
+                    nodesData.update(updates);
+                }
+            }
+
+            document.getElementById('simBtn').disabled = false;
+            document.getElementById('simBtn').classList.remove('opacity-50', 'cursor-not-allowed');
+        }
+
+        document.getElementById('regexInput').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') buildAndRenderAutomaton();
+        });
+        document.getElementById('inputString').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') startSimulation();
+        });
+
+        document.addEventListener('DOMContentLoaded', () => {
+            buildAndRenderAutomaton();
+        });
+
+    </script>
+</body>
+</html>
